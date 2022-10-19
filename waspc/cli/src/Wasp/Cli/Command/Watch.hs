@@ -3,7 +3,7 @@ module Wasp.Cli.Command.Watch
   )
 where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (MVar, swapMVar, threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.Chan (Chan, newChan, readChan)
 import Control.Monad (unless)
@@ -26,12 +26,26 @@ import qualified Wasp.Message as Msg
 -- | Forever listens for any file changes in waspProjectDir, and if there is a change,
 --   compiles Wasp source files in waspProjectDir and regenerates files in outDir.
 --   It will defer recompilation until no new change was detected in the last second.
-watch :: Path' Abs (Dir Common.WaspProjectDir) -> Path' Abs (Dir Wasp.Lib.ProjectRootDir) -> IO ()
-watch waspProjectDir outDir = FSN.withManager $ \mgr -> do
+watch ::
+  Path' Abs (Dir Common.WaspProjectDir) ->
+  Path' Abs (Dir Wasp.Lib.ProjectRootDir) ->
+  MVar Bool ->
+  IO ()
+watch waspProjectDir outDir isRestartInProgressMVar = FSN.withManager $ \mgr -> do
   currentTime <- getCurrentTime
   chan <- newChan
-  _ <- FSN.watchDirChan mgr (SP.fromAbsDir waspProjectDir) eventFilter chan
-  _ <- FSN.watchTreeChan mgr (SP.fromAbsDir $ waspProjectDir </> Common.extCodeDirInWaspProjectDir) eventFilter chan
+  _ <-
+    FSN.watchDirChan
+      mgr
+      (SP.fromAbsDir waspProjectDir)
+      eventFilter
+      chan
+  _ <-
+    FSN.watchTreeChan
+      mgr
+      (SP.fromAbsDir $ waspProjectDir </> Common.extCodeDirInWaspProjectDir)
+      eventFilter
+      chan
   listenForEvents chan currentTime
   where
     listenForEvents :: Chan FSN.Event -> UTCTime -> IO ()
@@ -44,6 +58,7 @@ watch waspProjectDir outDir = FSN.withManager $ \mgr -> do
           -- Recompile, but only after a 1s period of no new events.
           waitUntilNoNewEvents chan lastCompileTime 1
           currentTime <- getCurrentTime
+          _ <- swapMVar isRestartInProgressMVar True
           recompile
           listenForEvents chan currentTime
 

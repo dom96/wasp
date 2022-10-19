@@ -3,7 +3,10 @@ module Wasp.Cli.Command.Start
   )
 where
 
+import Control.Concurrent (readMVar, swapMVar)
 import Control.Concurrent.Async (race)
+import Control.Concurrent.MVar (newMVar)
+import Control.Monad (when)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
 import StrongPath ((</>))
@@ -36,8 +39,9 @@ start = do
   cliSendMessageC $ Msg.Start "Listening for file changes..."
   cliSendMessageC $ Msg.Start "Starting up generated project..."
   watchOrStartResult <-
-    liftIO $
-      (watch waspRoot outDir)
+    liftIO $ do
+      isRestartInProgressMVar <- newMVar False
+      watch waspRoot outDir isRestartInProgressMVar
         -- TODO: On jobs quiet down, print Wasp warnings and errors.
         --   But, do it only once after the restart caused by watch!
         --   Maybe I could give a channel to `watch`, to which it would write
@@ -48,7 +52,15 @@ start = do
         --   The point is: write warns/errs only if you haven't written them since the last
         --   restart triggered by watch. We do this to avoid writing errors again and again
         --   in case there is for example some console.log output coming from the server.
-        `race` (Wasp.Lib.start outDir (putStrLn "JOBS HAVE QUIETED DOWN"))
+        `race` ( Wasp.Lib.start
+                   outDir
+                   ( do
+                       isRestartInProgress <- readMVar isRestartInProgressMVar
+                       when isRestartInProgress $ do
+                         _ <- swapMVar isRestartInProgressMVar False
+                         putStrLn "TODO: Print warnings and error messages."
+                   )
+               )
   case watchOrStartResult of
     Left () -> error "This should never happen, listening for file changes should never end but it did."
     Right startResult -> case startResult of
