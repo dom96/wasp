@@ -19,14 +19,6 @@ import Wasp.Cli.Message (cliSendMessage)
 import qualified Wasp.Lib
 import qualified Wasp.Message as Msg
 
--- TODO: Another possible problem: on re-generation, wasp re-generates a lot of files, even those that should not
---   be generated again, since it is not smart enough yet to know which files do not need to be regenerated.
---   This can trigger `npm start` processes to reload multiple times, once for each file!
---   `nodemon` specifically has --delay option which says how long it should wait before restarting,
---   and it's default value is 1 second, so it will restart only once if all file changes happen in one second interval.
---   We could play in the future with increasing this delay. Nodemon can also be manually restarted with `rs` so
---   that could also be useful -> if we could do only manual restarting and not have it restart on its own, we could
---   have tigther control over it. But do we need nodemon at all then hm :)?
 -- TODO: Idea: Read .gitignore file, and ignore everything from it. This will then also cover the
 --   .wasp dir, and users can easily add any custom stuff they want ignored. But, we also have to
 --   be ready for the case when there is no .gitignore, that could be possible.

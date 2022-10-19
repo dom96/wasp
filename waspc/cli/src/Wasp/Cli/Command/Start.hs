@@ -35,7 +35,20 @@ start = do
 
   cliSendMessageC $ Msg.Start "Listening for file changes..."
   cliSendMessageC $ Msg.Start "Starting up generated project..."
-  watchOrStartResult <- liftIO $ race (watch waspRoot outDir) (Wasp.Lib.start outDir)
+  watchOrStartResult <-
+    liftIO $
+      (watch waspRoot outDir)
+        -- TODO: On jobs quiet down, print Wasp warnings and errors.
+        --   But, do it only once after the restart caused by watch!
+        --   Maybe I could give a channel to `watch`, to which it would write
+        --   on every restart, and then the handler I pass here would be listening
+        --   to that channel and when it gets triggered, it would do something only
+        --   if the channel is not empty. Not sure how I can learn that since it will
+        --   block on the channel though. Maybe I should use some kind of mvar instead.
+        --   The point is: write warns/errs only if you haven't written them since the last
+        --   restart triggered by watch. We do this to avoid writing errors again and again
+        --   in case there is for example some console.log output coming from the server.
+        `race` (Wasp.Lib.start outDir (putStrLn "JOBS HAVE QUIETED DOWN"))
   case watchOrStartResult of
     Left () -> error "This should never happen, listening for file changes should never end but it did."
     Right startResult -> case startResult of
