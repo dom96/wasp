@@ -27,6 +27,7 @@ start projectDir onJobsQuietDown = do
     Left serverExitCode -> return $ Left $ "Server failed with exit code " ++ show serverExitCode ++ "."
     Right webAppExitCode -> return $ Left $ "Web app failed with exit code " ++ show webAppExitCode ++ "."
 
+-- TODO: Consider if this is the best location for this function, or not.
 listenForJobsQuietDown :: Chan J.JobMessage -> IO () -> IO ()
 listenForJobsQuietDown jobsChan onJobsQuietDown = do
   -- TODO: Use threadDelaySeconds from Watch.hs
