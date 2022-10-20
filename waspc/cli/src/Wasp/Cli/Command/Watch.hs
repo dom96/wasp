@@ -6,6 +6,7 @@ where
 import Control.Concurrent (MVar, swapMVar, threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.Chan (Chan, newChan, readChan)
+import Control.Concurrent.MVar (tryPutMVar, tryTakeMVar)
 import Control.Monad (unless)
 import Data.List (isSuffixOf)
 import Data.Time.Clock (UTCTime, getCurrentTime)
@@ -16,6 +17,7 @@ import qualified System.FilePath as FP
 import Wasp.Cli.Command.Compile (compileIO)
 import qualified Wasp.Cli.Common as Common
 import Wasp.Cli.Message (cliSendMessage)
+import Wasp.Lib (CompileError, CompileWarning)
 import qualified Wasp.Lib
 import qualified Wasp.Message as Msg
 
@@ -26,12 +28,14 @@ import qualified Wasp.Message as Msg
 -- | Forever listens for any file changes in waspProjectDir, and if there is a change,
 --   compiles Wasp source files in waspProjectDir and regenerates files in outDir.
 --   It will defer recompilation until no new change was detected in the last second.
+-- TODO: Document what isRestartInProgressMVar does / is.
+--   What it is: If True, it means underlying services are potentially restarting the client and/or server.
 watch ::
   Path' Abs (Dir Common.WaspProjectDir) ->
   Path' Abs (Dir Wasp.Lib.ProjectRootDir) ->
-  MVar Bool ->
+  MVar ([CompileWarning], [CompileError]) ->
   IO ()
-watch waspProjectDir outDir isRestartInProgressMVar = FSN.withManager $ \mgr -> do
+watch waspProjectDir outDir ongoingCompilationResultMVar = FSN.withManager $ \mgr -> do
   currentTime <- getCurrentTime
   chan <- newChan
   _ <-
@@ -58,8 +62,9 @@ watch waspProjectDir outDir isRestartInProgressMVar = FSN.withManager $ \mgr -> 
           -- Recompile, but only after a 1s period of no new events.
           waitUntilNoNewEvents chan lastCompileTime 1
           currentTime <- getCurrentTime
-          _ <- swapMVar isRestartInProgressMVar True
           recompile
+          -- TODO: Below, set mvar to output from recompile -> warnings and errors.
+          _ <- tryTakeMVar ongoingCompilationResultMVar >> tryPutMVar ongoingCompilationResultMVar ([], [])
           listenForEvents chan currentTime
 
     -- Blocks until no new events are recieved for a duration of `secondsToDelay`.
@@ -78,7 +83,6 @@ watch waspProjectDir outDir isRestartInProgressMVar = FSN.withManager $ \mgr -> 
 
     isStaleEvent :: FSN.Event -> UTCTime -> Bool
     isStaleEvent event lastCompileTime = FSN.eventTime event < lastCompileTime
-
     threadDelaySeconds :: Int -> IO ()
     threadDelaySeconds =
       let microsecondsInASecond = 1000000
@@ -87,11 +91,17 @@ watch waspProjectDir outDir isRestartInProgressMVar = FSN.withManager $ \mgr -> 
     recompile :: IO ()
     recompile = do
       cliSendMessage $ Msg.Start "Recompiling on file change..."
-      compilationResult <- compileIO waspProjectDir outDir
-      case compilationResult of
-        Left err -> cliSendMessage $ Msg.Failure "Recompilation on file change failed" err
-        Right () -> cliSendMessage $ Msg.Success "Recompilation on file change succeeded."
-      return ()
+      (warnings, errors) <- compileIO waspProjectDir outDir
+      printCompilerWarningsIfAny warnings
+      if null errors
+        then
+          cliSendMessage $
+            Msg.Success "Recompilation on file change succeeded."
+        else -- TODO: duplication of output logic?
+
+          cliSendMessage $
+            Msg.Failure "Recompilation on file change failed" $
+              formatErrorOrWarningMessages errors
 
     -- TODO: This is a hardcoded approach to ignoring most of the common tmp files that editors
     --   create next to the source code. Bad thing here is that users can't modify this,

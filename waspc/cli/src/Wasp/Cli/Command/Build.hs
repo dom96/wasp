@@ -23,6 +23,7 @@ import qualified Wasp.Cli.Common as Common
 import Wasp.Cli.Message (cliSendMessage)
 import Wasp.CompileOptions (CompileOptions (..))
 import Wasp.Generator.Monad (GeneratorWarning (GeneratorNeedsMigrationWarning))
+import Wasp.Lib (CompileError, CompileWarning)
 import qualified Wasp.Lib
 import qualified Wasp.Message as Msg
 
@@ -50,7 +51,7 @@ build = do
 buildIO ::
   Path' Abs (Dir Common.WaspProjectDir) ->
   Path' Abs (Dir Wasp.Lib.ProjectRootDir) ->
-  IO (Either String ())
+  IO ([CompileWarning], [CompileError])
 buildIO waspProjectDir buildDir = compileIOWithOptions options waspProjectDir buildDir
   where
     options =

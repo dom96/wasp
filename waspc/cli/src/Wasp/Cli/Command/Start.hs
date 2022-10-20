@@ -3,9 +3,8 @@ module Wasp.Cli.Command.Start
   )
 where
 
-import Control.Concurrent (readMVar, swapMVar)
 import Control.Concurrent.Async (race)
-import Control.Concurrent.MVar (newMVar)
+import Control.Concurrent.MVar (MVar, newMVar, readMVar, swapMVar)
 import Control.Monad (when)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
@@ -16,10 +15,12 @@ import Wasp.Cli.Command.Common
   )
 import Wasp.Cli.Command.Compile
   ( compileIO,
+    printCompilerWarningsAndStatusAndThrowIfAnyErrors,
   )
 import Wasp.Cli.Command.Message (cliSendMessageC)
 import Wasp.Cli.Command.Watch (watch)
 import qualified Wasp.Cli.Common as Common
+import Wasp.Cli.Message (cliSendMessage)
 import qualified Wasp.Lib
 import qualified Wasp.Message as Msg
 
@@ -31,38 +32,35 @@ start = do
   let outDir = waspRoot </> Common.dotWaspDirInWaspProjectDir </> Common.generatedCodeDirInDotWaspDir
 
   cliSendMessageC $ Msg.Start "Starting compilation and setup phase. Hold tight..."
-  compilationResult <- liftIO $ compileIO waspRoot outDir
-  case compilationResult of
-    Left compileError -> throwError $ CommandError "Compilation failed" compileError
-    Right () -> cliSendMessageC $ Msg.Success "Code has been successfully compiled, project has been generated."
+  warningsAndErrors <- liftIO $ compileIO waspRoot outDir
+  printCompilerWarningsAndStatusAndThrowIfAnyErrors warningsAndErrors
 
   cliSendMessageC $ Msg.Start "Listening for file changes..."
   cliSendMessageC $ Msg.Start "Starting up generated project..."
   watchOrStartResult <-
     liftIO $ do
-      isRestartInProgressMVar <- newMVar False
-      watch waspRoot outDir isRestartInProgressMVar
-        -- TODO: On jobs quiet down, print Wasp warnings and errors.
-        --   But, do it only once after the restart caused by watch!
-        --   Maybe I could give a channel to `watch`, to which it would write
-        --   on every restart, and then the handler I pass here would be listening
-        --   to that channel and when it gets triggered, it would do something only
-        --   if the channel is not empty. Not sure how I can learn that since it will
-        --   block on the channel though. Maybe I should use some kind of mvar instead.
-        --   The point is: write warns/errs only if you haven't written them since the last
-        --   restart triggered by watch. We do this to avoid writing errors again and again
-        --   in case there is for example some console.log output coming from the server.
-        `race` ( Wasp.Lib.start
-                   outDir
-                   ( do
-                       isRestartInProgress <- readMVar isRestartInProgressMVar
-                       when isRestartInProgress $ do
-                         _ <- swapMVar isRestartInProgressMVar False
-                         putStrLn "TODO: Print warnings and error messages."
-                   )
-               )
+      ongoingCompilationResultMVar <- newMVar ([], [])
+      watch waspRoot outDir ongoingCompilationResultMVar
+        `race` Wasp.Lib.start outDir (onJobsQuietDown ongoingCompilationResultMVar)
   case watchOrStartResult of
     Left () -> error "This should never happen, listening for file changes should never end but it did."
     Right startResult -> case startResult of
       Left startError -> throwError $ CommandError "Start failed" startError
       Right () -> error "This should never happen, start should never end but it did."
+  where
+    onJobsQuietDown :: MVar ([CompileWarning], [CompileError]) -> IO ()
+    onJobsQuietDown ongoingCompilationResultMVar = do
+      maybeOngoingCompilationResult <- tryTakeMVar ongoingCompilationResultMVar
+      case maybeOngoingCompilationResult of
+        Nothing -> return ()
+        Just (warnings, errors) -> do
+          -- TODO: The way we print results of compilation -> warnings, errors -> is very incosistent.
+          --   We do it in multiple places:
+          --     1. If compile Command fails, warnings are printed but error is thrown and then
+          --        caught and printed by Wasp.
+          --     2. In Watch, we print both warnings and errors and don't fail on errors.
+          --     3. And I think we do this logic somewhere else also.
+          --  We should have one logic for printing warnings, and one for printing errors, and then
+          --  use them consistently in all these use cases.
+          printCompilerWarningsIfAny warnings
+          cliSendMessage $ Msg.Failure "Compilation errors" $ formatErrorOrWarningMessages errors ++ "\n\n"

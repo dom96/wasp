@@ -4,6 +4,9 @@ module Wasp.Cli.Command.Compile
     compileWithOptions,
     compileIOWithOptions,
     defaultCompileOptions,
+    formatErrorOrWarningMessages,
+    printCompilerWarningsIfAny,
+    printCompilerWarningsAndStatusAndThrowIfAnyErrors,
   )
 where
 
@@ -20,6 +23,7 @@ import qualified Wasp.Cli.Common as Common
 import Wasp.Cli.Message (cliSendMessage)
 import Wasp.Common (WaspProjectDir)
 import Wasp.CompileOptions (CompileOptions (..))
+import Wasp.Lib (CompileError, CompileWarning)
 import qualified Wasp.Lib
 import qualified Wasp.Message as Msg
 
@@ -39,36 +43,41 @@ compileWithOptions options = do
           </> Common.generatedCodeDirInDotWaspDir
 
   cliSendMessageC $ Msg.Start "Compiling wasp code..."
-  compilationResult <- liftIO $ compileIOWithOptions options waspProjectDir outDir
-  case compilationResult of
-    Left compileError -> throwError $ CommandError "Compilation failed" compileError
-    Right () -> cliSendMessageC $ Msg.Success "Code has been successfully compiled, project has been generated."
+  (warnings, errors) <- liftIO $ compileIOWithOptions options waspProjectDir outDir
+  printCompilerWarningsAndStatusAndThrowIfAnyErrors (warnings, errors)
+
+printCompilerWarningsAndStatusAndThrowIfAnyErrors :: ([CompileWarning], [CompileError]) -> Command ()
+printCompilerWarningsAndStatusAndThrowIfAnyErrors (warns, errs) = do
+  liftIO $ printCompilerWarningsIfAny warns
+  if null errs
+    then cliSendMessageC $ Msg.Success "Code has been successfully compiled, project has been generated."
+    else throwError $ CommandError "Compilation failed" $ formatErrorOrWarningMessages errs
+
+printCompilerWarningsIfAny :: [CompileWarning] -> IO ()
+printCompilerWarningsIfAny [] = return ()
+printCompilerWarningsIfAny warns =
+  cliSendMessage $
+    Msg.Warning "Your project compiled with warnings" $ formatErrorOrWarningMessages warns ++ "\n\n"
 
 -- | Compiles Wasp source code in waspProjectDir directory and generates a project
 --   in given outDir directory.
 compileIO ::
   Path' Abs (Dir WaspProjectDir) ->
   Path' Abs (Dir Wasp.Lib.ProjectRootDir) ->
-  IO (Either String ())
-compileIO waspProjectDir outDir = compileIOWithOptions (defaultCompileOptions waspProjectDir) waspProjectDir outDir
+  IO ([CompileWarning], [CompileError])
+compileIO waspProjectDir outDir =
+  compileIOWithOptions (defaultCompileOptions waspProjectDir) waspProjectDir outDir
 
 compileIOWithOptions ::
   CompileOptions ->
   Path' Abs (Dir Common.WaspProjectDir) ->
   Path' Abs (Dir Wasp.Lib.ProjectRootDir) ->
-  IO (Either String ())
-compileIOWithOptions options waspProjectDir outDir = do
-  (compilerWarnings, compilerErrors) <- Wasp.Lib.compile waspProjectDir outDir options
-  case compilerErrors of
-    [] -> do
-      displayWarnings compilerWarnings
-      return $ Right ()
-    errors -> return $ Left $ formatMessages errors
-  where
-    formatMessages messages = intercalate "\n" $ map ("- " ++) messages
-    displayWarnings [] = return ()
-    displayWarnings warnings =
-      cliSendMessage $ Msg.Warning "Your project compiled with warnings" (formatMessages warnings ++ "\n\n")
+  IO ([CompileWarning], [CompileError])
+compileIOWithOptions options waspProjectDir outDir =
+  Wasp.Lib.compile waspProjectDir outDir options
+
+formatErrorOrWarningMessages :: [String] -> String
+formatErrorOrWarningMessages = intercalate "\n" . map ("- " ++)
 
 defaultCompileOptions :: Path' Abs (Dir WaspProjectDir) -> CompileOptions
 defaultCompileOptions waspProjectDir =
